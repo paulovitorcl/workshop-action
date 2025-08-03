@@ -58,6 +58,12 @@ class GitHubActionAIGenerator:
             current_values = yaml.safe_load(self.current_values)
             operational_data = yaml.safe_load(self.operational_context)
             
+            # Ensure operational_data is a dictionary
+            if not isinstance(operational_data, dict):
+                print(f"::error::Operational context failed to parse as YAML dict, got type: {type(operational_data)}")
+                print(f"::debug::Raw operational context (first 200 chars): {str(self.operational_context)[:200]}...")
+                self.error("Invalid operational context YAML format")
+            
             print(f"📊 Loaded {len(self.helm_templates)} Helm templates")
             print(f"🔍 Processing operational data with {len(operational_data.get('recent_incidents', []))} incidents")
             
