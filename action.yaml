@@ -1,0 +1,43 @@
+name: 'AI Helm Values Generator'
+description: 'Generate optimized Helm values using AI analysis of operational context'
+author: 'Your Name'
+
+inputs:
+  app_name:
+    description: 'Application name'
+    required: true
+  environment:
+    description: 'Deployment environment (dev/staging/prod)'
+    required: true
+  current_values:
+    description: 'Current values.yaml content'
+    required: true
+  operational_context:
+    description: 'Operational context YAML for AI analysis'
+    required: true
+  helm_templates:
+    description: 'Helm templates content (JSON array of file contents)'
+    required: false
+    default: '[]'
+  ai_provider:
+    description: 'AI provider (ollama/copilot/openai)'
+    required: false
+    default: 'copilot'
+  ai_token:
+    description: 'AI provider API token'
+    required: false
+  ai_model:
+    description: 'AI model to use'
+    required: false
+
+outputs:
+  generated_values:
+    description: 'Generated values.yaml content'
+  ai_analysis:
+    description: 'AI analysis and recommendations'
+  changes_summary:
+    description: 'Summary of changes made'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
