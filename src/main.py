@@ -8,6 +8,7 @@ import sys
 import json
 import yaml
 import requests
+import base64
 from typing import Dict, Any, Optional, List
 
 class GitHubActionAIGenerator:
@@ -15,13 +16,15 @@ class GitHubActionAIGenerator:
         # Get inputs from GitHub Action environment
         self.app_name = os.getenv('INPUT_APP_NAME')
         self.environment = os.getenv('INPUT_ENVIRONMENT')
-        self.current_values = os.getenv('INPUT_CURRENT_VALUES')
-        self.operational_context = os.getenv('INPUT_OPERATIONAL_CONTEXT')
         
-        # Safely handle helm_templates input
-        helm_templates_raw = os.getenv('INPUT_HELM_TEMPLATES', '[]')
+        # Decode base64 inputs
+        self.current_values = self.decode_base64_input('INPUT_CURRENT_VALUES')
+        self.operational_context = self.decode_base64_input('INPUT_OPERATIONAL_CONTEXT')
+        
+        # Safely handle helm_templates input (also base64 encoded)
+        helm_templates_raw = self.decode_base64_input('INPUT_HELM_TEMPLATES')
         try:
-            if helm_templates_raw.strip() == '':
+            if not helm_templates_raw or helm_templates_raw.strip() == '':
                 self.helm_templates = []
             else:
                 self.helm_templates = json.loads(helm_templates_raw)
@@ -36,6 +39,19 @@ class GitHubActionAIGenerator:
         
         if not all([self.app_name, self.environment, self.current_values, self.operational_context]):
             self.error("Missing required inputs")
+    
+    def decode_base64_input(self, env_var: str) -> str:
+        """Decode base64 encoded input from environment variable"""
+        encoded_value = os.getenv(env_var, '')
+        if not encoded_value:
+            return ''
+        
+        try:
+            decoded_bytes = base64.b64decode(encoded_value)
+            return decoded_bytes.decode('utf-8')
+        except Exception as e:
+            print(f"::error::Failed to decode base64 input {env_var}: {e}")
+            return ''
     
     def error(self, message: str):
         """Output error and exit"""
