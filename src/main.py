@@ -17,7 +17,19 @@ class GitHubActionAIGenerator:
         self.environment = os.getenv('INPUT_ENVIRONMENT')
         self.current_values = os.getenv('INPUT_CURRENT_VALUES')
         self.operational_context = os.getenv('INPUT_OPERATIONAL_CONTEXT')
-        self.helm_templates = json.loads(os.getenv('INPUT_HELM_TEMPLATES', '[]'))
+        
+        # Safely handle helm_templates input
+        helm_templates_raw = os.getenv('INPUT_HELM_TEMPLATES', '[]')
+        try:
+            if helm_templates_raw.strip() == '':
+                self.helm_templates = []
+            else:
+                self.helm_templates = json.loads(helm_templates_raw)
+        except json.JSONDecodeError as e:
+            print(f"::error::Failed to parse helm_templates JSON: {e}")
+            print(f"::debug::Raw helm_templates value: {helm_templates_raw[:200]}...")
+            self.error("Invalid helm_templates JSON format")
+        
         self.ai_provider = os.getenv('INPUT_AI_PROVIDER', 'copilot')
         self.ai_token = os.getenv('INPUT_AI_TOKEN')
         self.ai_model = os.getenv('INPUT_AI_MODEL')
@@ -32,7 +44,10 @@ class GitHubActionAIGenerator:
     
     def output(self, name: str, value: str):
         """Set GitHub Action output"""
-        print(f"::set-output name={name}::{value}")
+        # Escape multiline output properly for GitHub Actions
+        delimiter = f"EOF_{os.urandom(8).hex()}"
+        escaped_value = value.replace('%', '%25').replace('\n', '%0A').replace('\r', '%0D')
+        print(f"::set-output name={name}::{escaped_value}")
     
     def run(self):
         """Main action execution"""
@@ -43,6 +58,9 @@ class GitHubActionAIGenerator:
             current_values = yaml.safe_load(self.current_values)
             operational_data = yaml.safe_load(self.operational_context)
             
+            print(f"📊 Loaded {len(self.helm_templates)} Helm templates")
+            print(f"🔍 Processing operational data with {len(operational_data.get('recent_incidents', []))} incidents")
+            
             # Generate AI analysis context
             context = self.build_analysis_context(current_values, operational_data)
             
@@ -50,7 +68,7 @@ class GitHubActionAIGenerator:
             recommendations = self.generate_ai_recommendations(context)
             
             if not recommendations:
-                self.error("Failed to generate AI recommendations")
+                self.error("Failed to generate AI recommendations - check AI provider configuration and token")
             
             # Apply recommendations to current values
             updated_values = self.apply_recommendations(current_values, recommendations)
@@ -61,7 +79,7 @@ class GitHubActionAIGenerator:
             
             # Set outputs
             self.output('generated_values', generated_yaml)
-            self.output('ai_analysis', recommendations.get('analysis', ''))
+            self.output('ai_analysis', recommendations.get('analysis', 'Analysis completed'))
             self.output('changes_summary', changes)
             
             print("✅ Successfully generated optimized values.yaml")
@@ -85,8 +103,8 @@ class GitHubActionAIGenerator:
         if self.helm_templates:
             context_parts.extend([
                 "",
-                "HELM TEMPLATES:",
-                *self.helm_templates
+                f"HELM TEMPLATES ({len(self.helm_templates)} files):",
+                *[f"Template {i+1}:\n{template}" for i, template in enumerate(self.helm_templates)]
             ])
         
         return "\n".join(context_parts)
@@ -125,14 +143,17 @@ Respond in JSON format:
         elif self.ai_provider == 'openai':
             return self.call_openai(prompt)
         else:
-            self.error(f"Unsupported AI provider: {self.ai_provider}")
+            print(f"::warning::Unsupported AI provider: {self.ai_provider}")
+            return None
     
     def call_github_models(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Call GitHub Models API"""
         if not self.ai_token:
-            self.error("AI token required for GitHub Models")
+            print("::error::AI token is required for GitHub Models API")
+            return None
         
         try:
+            print("🤖 Calling GitHub Models API...")
             response = requests.post(
                 'https://models.github.ai/inference/chat/completions',
                 headers={
@@ -141,27 +162,44 @@ Respond in JSON format:
                 },
                 json={
                     'model': self.ai_model or 'gpt-4o',
-                    'messages': [{'role': 'user', 'content': prompt}],
-                    'max_tokens': 1000,
+                    'messages': [
+                        {
+                            'role': 'system', 
+                            'content': 'You are a Kubernetes expert. Respond only with valid JSON.'
+                        },
+                        {
+                            'role': 'user', 
+                            'content': prompt
+                        }
+                    ],
+                    'max_tokens': 1500,
                     'temperature': 0.1
                 },
                 timeout=60
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                print(f"::error::GitHub Models API returned {response.status_code}: {response.text}")
+                return None
             
             ai_response = response.json()['choices'][0]['message']['content']
-            return json.loads(ai_response)
+            print(f"🤖 AI Response received: {len(ai_response)} characters")
+            
+            # Clean and parse JSON response
+            return self.parse_ai_json_response(ai_response)
             
         except Exception as e:
-            print(f"::warning::GitHub Models API error: {e}")
+            print(f"::error::GitHub Models API error: {e}")
             return None
     
     def call_openai(self, prompt: str) -> Optional[Dict[str, Any]]:
         """Call OpenAI API"""
         if not self.ai_token:
-            self.error("AI token required for OpenAI")
+            print("::error::AI token is required for OpenAI API")
+            return None
         
         try:
+            print("🤖 Calling OpenAI API...")
             response = requests.post(
                 'https://api.openai.com/v1/chat/completions',
                 headers={
@@ -170,29 +208,83 @@ Respond in JSON format:
                 },
                 json={
                     'model': self.ai_model or 'gpt-4',
-                    'messages': [{'role': 'user', 'content': prompt}],
-                    'max_tokens': 1000,
+                    'messages': [
+                        {
+                            'role': 'system',
+                            'content': 'You are a Kubernetes expert. Respond only with valid JSON.'
+                        },
+                        {
+                            'role': 'user',
+                            'content': prompt
+                        }
+                    ],
+                    'max_tokens': 1500,
                     'temperature': 0.1
                 },
                 timeout=60
             )
-            response.raise_for_status()
+            
+            if response.status_code != 200:
+                print(f"::error::OpenAI API returned {response.status_code}: {response.text}")
+                return None
             
             ai_response = response.json()['choices'][0]['message']['content']
-            return json.loads(ai_response)
+            print(f"🤖 AI Response received: {len(ai_response)} characters")
+            
+            # Clean and parse JSON response
+            return self.parse_ai_json_response(ai_response)
             
         except Exception as e:
-            print(f"::warning::OpenAI API error: {e}")
+            print(f"::error::OpenAI API error: {e}")
+            return None
+    
+    def parse_ai_json_response(self, ai_response: str) -> Optional[Dict[str, Any]]:
+        """Parse AI response and extract JSON"""
+        try:
+            # Remove markdown code blocks if present
+            if '```json' in ai_response:
+                json_start = ai_response.find('```json') + 7
+                json_end = ai_response.find('```', json_start)
+                ai_response = ai_response[json_start:json_end].strip()
+            elif '```' in ai_response:
+                json_start = ai_response.find('```') + 3
+                json_end = ai_response.find('```', json_start)
+                ai_response = ai_response[json_start:json_end].strip()
+            
+            # Parse JSON
+            result = json.loads(ai_response)
+            
+            # Validate required fields
+            if not isinstance(result, dict):
+                print("::error::AI response is not a JSON object")
+                return None
+            
+            if 'recommendations' not in result:
+                print("::error::AI response missing 'recommendations' field")
+                return None
+            
+            print(f"✅ Successfully parsed AI recommendations with {len(result.get('recommendations', {}))} changes")
+            return result
+            
+        except json.JSONDecodeError as e:
+            print(f"::error::Failed to parse AI response as JSON: {e}")
+            print(f"::debug::AI response (first 500 chars): {ai_response[:500]}...")
             return None
     
     def apply_recommendations(self, current_values: Dict[str, Any], recommendations: Dict[str, Any]) -> Dict[str, Any]:
         """Apply AI recommendations to current values"""
-        updated_values = current_values.copy()
+        updated_values = self.deep_copy_dict(current_values)
         
         for path, value in recommendations.get('recommendations', {}).items():
+            print(f"📝 Applying: {path} = {value}")
             self.set_nested_value(updated_values, path, value)
         
         return updated_values
+    
+    def deep_copy_dict(self, original: Dict) -> Dict:
+        """Deep copy a dictionary"""
+        import copy
+        return copy.deepcopy(original)
     
     def set_nested_value(self, data: Dict[str, Any], path: str, value: Any):
         """Set nested dictionary value using dot notation"""
